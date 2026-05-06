@@ -6,15 +6,15 @@ use std::time::Duration;
 type ProcessingFn = fn(usize, i32) -> i32;
 
 //Define the cpu resource
-let mut cpu_resource = 0;
+//static mut CPU_RESOURCE: i16 = 0;
+
 
 // Define a function that processes data by squaring it
 fn cpu_task(id: usize){
+    //Need to make a mutex
     println!("Worker {} is performing a cpu task", id);
-    cpu_resource += 35
+    //CPU_RESOURCE += 35;
     thread::sleep(Duration::from_millis(200));
-
-    
 
     println!("Worker {} finished cpu task.", id);
     
@@ -22,13 +22,12 @@ fn cpu_task(id: usize){
 
 // Define another processing function that doubles data
 fn io_task(id: usize){
+    
     println!("Worker {} performing io task", id);
-    thread::sleep(Duration::from_millis(50));
+    thread::sleep(Duration::from_millis(200));
+    //CPU_RESOURCE += 10;
 
-    let result = value * 2;
-
-    println!("Worker {} finished doubling. Result: {}", id, result);
-    result
+    println!("Worker {} finished io task", id);
 }
 
 // This function creates worker threads and takes a processing function as a parameter
@@ -89,7 +88,7 @@ fn create_worker_pool(
 fn main() {
     println!("=== Starting worker pool with squaring function ===");
 
-    let (handles, task_tx, results) = create_worker_pool(8, square_data);
+    let (handles, task_tx, results) = create_worker_pool(8, cpu_task);
 
     for i in 1..=10 {
         task_tx.send(i).unwrap();
@@ -120,7 +119,7 @@ fn main() {
 
     println!("\n=== Starting worker pool with doubling function ===");
 
-    let (handles, task_tx, results) = create_worker_pool(2, double_data);
+    let (handles, task_tx, results) = create_worker_pool(2, fn(usize) -> () {io_task});
 
     for i in 1..=10 {
         task_tx.send(i).unwrap();
