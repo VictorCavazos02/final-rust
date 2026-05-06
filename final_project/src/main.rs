@@ -5,20 +5,24 @@ use std::time::Duration;
 // Define a type for our processing function
 type ProcessingFn = fn(usize, i32) -> i32;
 
+//Define the cpu resource
+let mut cpu_resource = 0;
+
 // Define a function that processes data by squaring it
-fn square_data(id: usize, value: i32) -> i32 {
-    println!("Worker {} squaring value: {}", id, value);
-    thread::sleep(Duration::from_millis(100));
+fn cpu_task(id: usize){
+    println!("Worker {} is performing a cpu task", id);
+    cpu_resource += 35
+    thread::sleep(Duration::from_millis(200));
 
-    let result = value * value;
+    
 
-    println!("Worker {} finished squaring. Result: {}", id, result);
-    result
+    println!("Worker {} finished cpu task.", id);
+    
 }
 
 // Define another processing function that doubles data
-fn double_data(id: usize, value: i32) -> i32 {
-    println!("Worker {} doubling value: {}", id, value);
+fn io_task(id: usize){
+    println!("Worker {} performing io task", id);
     thread::sleep(Duration::from_millis(50));
 
     let result = value * 2;
