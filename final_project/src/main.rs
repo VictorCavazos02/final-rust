@@ -1,5 +1,4 @@
 use rand::Rng;
-use std::collections::VecDeque;
 use std::fs::File;
 use std::io::Write;
 use std::sync::{mpsc, Arc, Mutex};
@@ -16,14 +15,13 @@ enum TaskType {
 
 #[derive(Clone, Debug)]
 struct Task {
-    id: usize,
+    _id: usize,
     task_type: TaskType,
     created_at: Instant,
 }
 
 #[derive(Debug)]
 struct TaskResult {
-    task_id: usize,
     wait_time: u128,
     turnaround_time: u128,
     task_type: TaskType,
@@ -36,7 +34,6 @@ struct SystemState {
     cpu_usage: f64,
     active_workers: usize,
     completed_tasks: usize,
-    dispatcher_done: bool,
 }
 
 // ---------------- CONSTANTS ----------------
@@ -44,18 +41,13 @@ struct SystemState {
 const MAX_CPU: f64 = 100.0;
 const IO_CPU: f64 = 10.0;
 const CPU_CPU: f64 = 35.0;
-const TOTAL_TASKS: usize = 1000;
 
 // ---------------- DISPATCHER ----------------
 
-fn dispatcher(
-    queue: Arc<Mutex<VecDeque<Task>>>,
-    state: Arc<Mutex<SystemState>>,
-    io_ratio: f64,
-) {
+fn dispatcher(tx: mpsc::Sender<Task>, io_ratio: f64) {
     let mut rng = rand::thread_rng();
 
-    for i in 0..TOTAL_TASKS {
+    for i in 0..1000 {
         let task_type = if rng.gen::<f64>() < io_ratio {
             TaskType::IO
         } else {
@@ -63,56 +55,26 @@ fn dispatcher(
         };
 
         let task = Task {
-            id: i,
-            task_type: task_type.clone(),
+            _id: i,
+            task_type,
             created_at: Instant::now(),
         };
 
-        {
-            let mut q = queue.lock().unwrap();
+        tx.send(task).unwrap();
 
-            // Prioritize IO tasks
-            match task_type {
-                TaskType::IO => q.push_front(task),
-                TaskType::CPU => q.push_back(task),
-            }
-        }
-
+        // Simulate staggered task arrivals
         thread::sleep(Duration::from_millis(20));
     }
-
-    let mut s = state.lock().unwrap();
-    s.dispatcher_done = true;
 }
 
-// ---------------- MANAGER ----------------
+// ---------------- MANAGER (FIFO) ----------------
 
 fn manager(
-    queue: Arc<Mutex<VecDeque<Task>>>,
+    rx: mpsc::Receiver<Task>,
     worker_tx: mpsc::Sender<Task>,
     state: Arc<Mutex<SystemState>>,
 ) {
-    loop {
-        let task = {
-            let mut q = queue.lock().unwrap();
-            q.pop_front()
-        };
-
-        let task = match task {
-            Some(t) => t,
-            None => {
-                let s = state.lock().unwrap();
-
-                if s.dispatcher_done && s.completed_tasks >= TOTAL_TASKS {
-                    break;
-                }
-
-                drop(s);
-                thread::sleep(Duration::from_millis(1));
-                continue;
-            }
-        };
-
+    for task in rx {
         loop {
             let mut s = state.lock().unwrap();
 
@@ -121,15 +83,20 @@ fn manager(
                 TaskType::CPU => CPU_CPU,
             };
 
-            if s.cpu_usage + needed_cpu <= MAX_CPU && s.active_workers < 8 {
+            // FIFO scheduling with resource constraints
+            if s.cpu_usage + needed_cpu <= MAX_CPU
+                && s.active_workers < 8
+            {
                 s.cpu_usage += needed_cpu;
                 s.active_workers += 1;
 
                 worker_tx.send(task.clone()).unwrap();
+
                 break;
             }
 
             drop(s);
+
             thread::sleep(Duration::from_millis(1));
         }
     }
@@ -164,7 +131,7 @@ fn worker(
             .duration_since(task.created_at)
             .as_millis();
 
-        // Simulated work
+        // Simulate task execution
         thread::sleep(Duration::from_millis(200));
 
         let finish_time = Instant::now();
@@ -175,7 +142,6 @@ fn worker(
 
         result_tx
             .send(TaskResult {
-                task_id: task.id,
                 wait_time,
                 turnaround_time,
                 task_type: task.task_type.clone(),
@@ -201,15 +167,21 @@ fn monitor(
     let mut worker_sum = 0.0;
     let mut samples = 0;
 
-    let mut file = File::create("monitor_log.csv").unwrap();
+    let mut file =
+        File::create("monitor_log.csv").unwrap();
 
-    writeln!(file, "time_ms,cpu_usage,active_workers").unwrap();
+    writeln!(
+        file,
+        "time_ms,cpu_usage,active_workers"
+    )
+    .unwrap();
 
     loop {
         {
             let s = state.lock().unwrap();
 
-            let elapsed = start.elapsed().as_millis();
+            let elapsed =
+                start.elapsed().as_millis();
 
             cpu_sum += s.cpu_usage;
             worker_sum += s.active_workers as f64;
@@ -224,7 +196,7 @@ fn monitor(
             )
             .unwrap();
 
-            if s.completed_tasks >= TOTAL_TASKS {
+            if s.completed_tasks >= 1000 {
                 break;
             }
         }
@@ -240,41 +212,38 @@ fn monitor(
 // ---------------- MAIN SIMULATION ----------------
 
 fn run_simulation(io_ratio: f64) {
-    // Shared deque queue
-    let queue = Arc::new(Mutex::new(VecDeque::<Task>::new()));
+    let (tx_dispatch, rx_dispatch) = mpsc::channel();
 
-    // Channels
     let (tx_worker, rx_worker) = mpsc::channel();
+
     let (result_tx, result_rx) = mpsc::channel();
+
     let (monitor_tx, monitor_rx) = mpsc::channel();
 
-    // Shared state
     let state = Arc::new(Mutex::new(SystemState {
         cpu_usage: 0.0,
         active_workers: 0,
         completed_tasks: 0,
-        dispatcher_done: false,
     }));
 
     let start = Instant::now();
 
     // ---------------- Dispatcher ----------------
 
-    let d_queue = Arc::clone(&queue);
-    let d_state = Arc::clone(&state);
+    let d_tx = tx_dispatch.clone();
 
     thread::spawn(move || {
-        dispatcher(d_queue, d_state, io_ratio)
+        dispatcher(d_tx, io_ratio)
     });
 
     // ---------------- Manager ----------------
 
-    let m_queue = Arc::clone(&queue);
     let m_state = Arc::clone(&state);
+
     let w_tx = tx_worker.clone();
 
     thread::spawn(move || {
-        manager(m_queue, w_tx, m_state)
+        manager(rx_dispatch, w_tx, m_state)
     });
 
     // ---------------- Workers ----------------
@@ -285,7 +254,9 @@ fn run_simulation(io_ratio: f64) {
 
     for i in 0..8 {
         let rx = Arc::clone(&rx_worker);
+
         let st = Arc::clone(&state);
+
         let rtx = result_tx.clone();
 
         handles.push(thread::spawn(move || {
@@ -306,35 +277,25 @@ fn run_simulation(io_ratio: f64) {
     let mut total_wait = 0.0;
     let mut total_turnaround = 0.0;
 
-    let mut io_wait_total = 0.0;
-    let mut cpu_wait_total = 0.0;
+    let mut max_wait = 0;
 
     let mut io_count = 0;
     let mut cpu_count = 0;
 
-    let mut max_wait = 0;
-    let mut max_wait_task = 0;
-
-    for _ in 0..TOTAL_TASKS {
+    for _ in 0..1000 {
         if let Ok(res) = result_rx.recv() {
             total_wait += res.wait_time as f64;
-            total_turnaround += res.turnaround_time as f64;
+
+            total_turnaround +=
+                res.turnaround_time as f64;
 
             if res.wait_time > max_wait {
                 max_wait = res.wait_time;
-                max_wait_task = res.task_id;
             }
 
             match res.task_type {
-                TaskType::IO => {
-                    io_wait_total += res.wait_time as f64;
-                    io_count += 1;
-                }
-
-                TaskType::CPU => {
-                    cpu_wait_total += res.wait_time as f64;
-                    cpu_count += 1;
-                }
+                TaskType::IO => io_count += 1,
+                TaskType::CPU => cpu_count += 1,
             }
         }
     }
@@ -344,31 +305,23 @@ fn run_simulation(io_ratio: f64) {
     let (cpu_sum, worker_sum, samples) =
         monitor_rx.recv().unwrap();
 
-    let avg_wait = total_wait / TOTAL_TASKS as f64;
+    let avg_wait = total_wait / 1000.0;
+
     let avg_turnaround =
-        total_turnaround / TOTAL_TASKS as f64;
-
-    let avg_io_wait =
-        if io_count > 0 {
-            io_wait_total / io_count as f64
-        } else {
-            0.0
-        };
-
-    let avg_cpu_wait =
-        if cpu_count > 0 {
-            cpu_wait_total / cpu_count as f64
-        } else {
-            0.0
-        };
+        total_turnaround / 1000.0;
 
     let avg_cpu = cpu_sum / samples as f64;
-    let avg_workers = worker_sum / samples as f64;
 
-    let total_runtime = start.elapsed().as_millis();
+    let avg_workers =
+        worker_sum / samples as f64;
+
+    let total_runtime =
+        start.elapsed().as_millis();
+
     let makespan = total_runtime;
 
     // Shutdown
+    drop(tx_dispatch);
     drop(tx_worker);
     drop(result_tx);
 
@@ -378,11 +331,10 @@ fn run_simulation(io_ratio: f64) {
 
     // ---------------- OUTPUT ----------------
 
-    println!("== Optimized simulation ==");
+    println!("== FIFO simulation ==");
 
     println!(
-        "{} tasks, {:.0}% IO / {:.0}% CPU, 8 workers, cap 100%",
-        TOTAL_TASKS,
+        "1000 tasks, {:.0}% IO / {:.0}% CPU, 8 workers, cap 100%",
         io_ratio * 100.0,
         (1.0 - io_ratio) * 100.0
     );
@@ -400,8 +352,7 @@ fn run_simulation(io_ratio: f64) {
     );
 
     println!(
-        "tasks completed    : {} (IO={}, CPU={})",
-        TOTAL_TASKS,
+        "tasks completed    : 1000 (IO={}, CPU={})",
         io_count,
         cpu_count
     );
@@ -412,24 +363,13 @@ fn run_simulation(io_ratio: f64) {
     );
 
     println!(
-        "avg wait (IO only) : {:.2} ms",
-        avg_io_wait
-    );
-
-    println!(
-        "avg wait (CPU only): {:.2} ms",
-        avg_cpu_wait
-    );
-
-    println!(
         "avg turnaround time: {:.2} ms",
         avg_turnaround
     );
 
     println!(
-        "max wait time      : {} ms (task #{})",
-        max_wait,
-        max_wait_task
+        "max wait time      : {} ms",
+        max_wait
     );
 
     println!(
