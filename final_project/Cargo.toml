@@ -1,6 +1,8 @@
 [package]
-name = "final_project"
+name = "dispatcher"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+crossbeam = "0.8"
+rand = "0.8"
